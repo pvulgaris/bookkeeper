@@ -23,6 +23,8 @@ def main(
     quicken_file: Path = typer.Argument(..., help="Path to .quicken file"),
     start_date: Optional[str] = typer.Option(None, help="Start date (YYYY-MM-DD)"),
     end_date: Optional[str] = typer.Option(None, help="End date (YYYY-MM-DD)"),
+    account_types: Optional[str] = typer.Option(None, "--account-types", help="Comma-separated account types (e.g., CHECKING,CREDITCARD)"),
+    list_accounts: bool = typer.Option(False, "--list-accounts", help="List all accounts by type and exit"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without applying"),
     api_key: Optional[str] = typer.Option(None, "--api-key", envvar="ANTHROPIC_API_KEY", help="Anthropic API key"),
 ):
@@ -30,8 +32,14 @@ def main(
     Clean and categorize transactions in a Quicken file.
 
     Examples:
+        # List all accounts by type
+        bookkeeper myfile.quicken --list-accounts
+
         # Dry run for transactions since Jan 1, 2024
         bookkeeper myfile.quicken --start-date 2024-01-01 --dry-run
+
+        # Filter to only checking and credit card accounts
+        bookkeeper myfile.quicken --account-types CHECKING,CREDITCARD --dry-run
 
         # Apply changes for a specific date range
         bookkeeper myfile.quicken --start-date 2024-01-01 --end-date 2024-12-31
@@ -47,15 +55,38 @@ def main(
     if not quicken_file.suffix == ".quicken":
         console.print(f"[yellow]Warning: Expected .quicken file, got {quicken_file.suffix}[/yellow]")
 
+    # Handle --list-accounts
+    if list_accounts:
+        reader = QuickenReader(quicken_file)
+        accounts = reader.get_all_accounts()
+
+        console.print("[bold cyan]Accounts by Type[/bold cyan]")
+        console.print()
+
+        for account_type in sorted(accounts.keys()):
+            console.print(f"[bold yellow]{account_type}[/bold yellow] ({len(accounts[account_type])} accounts):")
+            for account_name in accounts[account_type]:
+                console.print(f"  • {account_name}")
+            console.print()
+
+        return
+
     # Display configuration
     console.print(f"[green]File:[/green] {quicken_file}")
     console.print(f"[green]Date range:[/green] {start_date or 'all'} to {end_date or 'now'}")
     console.print(f"[green]Mode:[/green] {'DRY RUN' if dry_run else 'UPDATE'}")
+    if account_types:
+        console.print(f"[green]Account types:[/green] {account_types}")
     console.print()
 
     # Parse dates
     parsed_start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
     parsed_end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else None
+
+    # Parse account types
+    parsed_account_types = None
+    if account_types:
+        parsed_account_types = [t.strip().upper() for t in account_types.split(",")]
 
     # Create backup before making any changes (even in dry-run for safety)
     if not dry_run:
@@ -67,7 +98,11 @@ def main(
     # Read transactions
     console.print("[cyan]Reading transactions...[/cyan]")
     reader = QuickenReader(quicken_file)
-    transactions = reader.read_transactions(start_date=parsed_start, end_date=parsed_end)
+    transactions = reader.read_transactions(
+        start_date=parsed_start,
+        end_date=parsed_end,
+        account_types=parsed_account_types
+    )
     categories = reader.get_all_categories()
 
     console.print(f"[green]Found {len(transactions)} transactions[/green]")

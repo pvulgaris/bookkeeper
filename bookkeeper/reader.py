@@ -80,6 +80,7 @@ class QuickenReader:
         self,
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
+        account_types: Optional[list[str]] = None,
     ) -> list[Transaction]:
         """
         Read transactions from the database.
@@ -87,6 +88,8 @@ class QuickenReader:
         Args:
             start_date: Optional start date filter
             end_date: Optional end date filter
+            account_types: Optional list of account types to include
+                          (e.g., ['CHECKING', 'CREDITCARD'])
 
         Returns:
             List of Transaction objects
@@ -95,7 +98,7 @@ class QuickenReader:
         conn.row_factory = sqlite3.Row
 
         try:
-            # Join transactions with payees and categories
+            # Join transactions with payees, categories, and accounts
             query = """
                 SELECT
                     t.Z_PK as id,
@@ -108,33 +111,44 @@ class QuickenReader:
                     t.ZACCOUNT as account_id,
                     p.ZNAME as payee_name,
                     c.ZNAME as category_name,
-                    cfte.Z_PK as cashflow_entry_id
+                    cfte.Z_PK as cashflow_entry_id,
+                    a.ZNAME as account_name,
+                    a.ZTYPENAME as account_type
                 FROM ZTRANSACTION t
                 LEFT JOIN ZUSERPAYEE p ON t.ZUSERPAYEE = p.Z_PK
                 LEFT JOIN ZCASHFLOWTRANSACTIONENTRY cfte ON cfte.ZPARENT = t.Z_PK
                 LEFT JOIN ZTAG c ON cfte.ZCATEGORYTAG = c.Z_PK
+                LEFT JOIN ZACCOUNT a ON t.ZACCOUNT = a.Z_PK
                 WHERE t.ZAMOUNT IS NOT NULL
             """
             params = []
 
-            # Build date filters
-            date_conditions = []
+            # Build filters
+            conditions = []
+
+            # Account type filter
+            if account_types:
+                placeholders = ",".join(["?" for _ in account_types])
+                conditions.append(f"a.ZTYPENAME IN ({placeholders})")
+                params.extend(account_types)
+            # Date filters
             if start_date:
                 # Convert Python date to Core Data timestamp
                 start_dt = datetime.combine(start_date, datetime.min.time())
                 start_timestamp = start_dt.timestamp() - CORE_DATA_EPOCH
-                date_conditions.append("t.ZENTEREDDATE >= ?")
+                conditions.append("t.ZENTEREDDATE >= ?")
                 params.append(start_timestamp)
 
             if end_date:
                 # Convert Python date to Core Data timestamp
                 end_dt = datetime.combine(end_date, datetime.max.time())
                 end_timestamp = end_dt.timestamp() - CORE_DATA_EPOCH
-                date_conditions.append("t.ZENTEREDDATE <= ?")
+                conditions.append("t.ZENTEREDDATE <= ?")
                 params.append(end_timestamp)
 
-            if date_conditions:
-                query += " AND " + " AND ".join(date_conditions)
+            # Apply all conditions
+            if conditions:
+                query += " AND " + " AND ".join(conditions)
 
             query += " ORDER BY t.ZENTEREDDATE DESC"
 
@@ -179,5 +193,36 @@ class QuickenReader:
                 "SELECT ZNAME FROM ZTAG WHERE ZUSERASSIGNABLE = 1 ORDER BY ZNAME"
             )
             return [row[0] for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def get_all_accounts(self) -> dict[str, list[str]]:
+        """
+        Get all accounts grouped by account type.
+
+        Returns:
+            Dictionary mapping account type -> list of account names
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.execute(
+                """
+                SELECT ZTYPENAME, ZNAME
+                FROM ZACCOUNT
+                WHERE ZTYPENAME IS NOT NULL
+                ORDER BY ZTYPENAME, ZNAME
+                """
+            )
+
+            accounts_by_type = {}
+            for row in cursor.fetchall():
+                account_type = row[0]
+                account_name = row[1]
+
+                if account_type not in accounts_by_type:
+                    accounts_by_type[account_type] = []
+                accounts_by_type[account_type].append(account_name)
+
+            return accounts_by_type
         finally:
             conn.close()
