@@ -21,6 +21,97 @@ class TransactionClassifier:
         # TODO: Load trained ML model if available
         self.ml_model = None
 
+        # Rule-based patterns: payee substring -> category
+        # Case-insensitive matching
+        self.rules = self._load_default_rules()
+
+    def _load_default_rules(self) -> dict[str, str]:
+        """
+        Load default rule-based categorization patterns.
+
+        Returns:
+            Dictionary mapping payee patterns to categories
+        """
+        return {
+            # Groceries
+            "whole foods": "Groceries",
+            "trader joe": "Groceries",
+            "safeway": "Groceries",
+            "stop & shop": "Groceries",
+            "costco": "Groceries",
+            "target": "Groceries",
+            "walmart": "Groceries",
+            "wegmans": "Groceries",
+            "kroger": "Groceries",
+            "publix": "Groceries",
+
+            # Gas & Auto
+            "shell": "Gas & Fuel",
+            "chevron": "Gas & Fuel",
+            "exxon": "Gas & Fuel",
+            "mobil": "Gas & Fuel",
+            "bp ": "Gas & Fuel",
+            "texaco": "Gas & Fuel",
+            "arco": "Gas & Fuel",
+
+            # Coffee & Fast Food
+            "starbucks": "Coffee Shops",
+            "dunkin": "Coffee Shops",
+            "mcdonald": "Fast Food",
+            "burger king": "Fast Food",
+            "wendy": "Fast Food",
+            "taco bell": "Fast Food",
+            "kfc": "Fast Food",
+            "chick-fil-a": "Fast Food",
+            "five guys": "Fast Food",
+            "shake shack": "Fast Food",
+
+            # Restaurants
+            "chipotle": "Restaurants",
+            "panera": "Restaurants",
+            "subway": "Fast Food",
+
+            # Transportation
+            "uber": "Auto & Transport",
+            "lyft": "Auto & Transport",
+            "mta": "Public Transportation",
+
+            # Entertainment & Subscriptions
+            "netflix": "Entertainment",
+            "hulu": "Entertainment",
+            "spotify": "Entertainment",
+            "patreon": "Entertainment",
+            "substack": "Books",
+            "parentdata": "Books",
+
+            # Shopping & Services
+            "amazon": "Shopping",
+            "apple.com": "Electronics & Software",
+            "peloton": "Gym",
+            "ups": "Shopping",
+            "usps": "Shopping",
+            "federal express": "Shopping",
+            "fedex": "Shopping",
+
+            # Travel
+            "united airlines": "Air Travel",
+            "jetblue": "Air Travel",
+            "alaska air": "Air Travel",
+            "southwest": "Air Travel",
+            "delta": "Air Travel",
+            "american airlines": "Air Travel",
+
+            # Local merchants (Berkeley/Oakland area)
+            "souvenir": "Coffee Shops",
+            "barneys gourmet": "Restaurants",
+            "rick and ann": "Restaurants",
+            "timeless coff": "Coffee Shops",
+            "la farine": "Restaurants",
+
+            # Car rental & sharing
+            "zipcar": "Auto & Transport",
+        }
+
     def classify(self, transaction: Transaction, available_categories: list[str]) -> tuple[str, float]:
         """
         Classify a transaction and return suggested category with confidence.
@@ -60,11 +151,14 @@ class TransactionClassifier:
         Returns:
             Category if a rule matches, None otherwise
         """
-        # TODO: Implement rule-based patterns
-        # Examples:
-        # - Payee contains "SAFEWAY" -> "Groceries"
-        # - Payee contains "SHELL" -> "Auto:Fuel"
-        # - Amount patterns (e.g., recurring $X.XX -> specific category)
+        # Case-insensitive payee matching
+        payee_lower = transaction.payee.lower()
+
+        # Check each rule pattern
+        for pattern, category in self.rules.items():
+            if pattern in payee_lower:
+                return category
+
         return None
 
     def _classify_with_ml(
