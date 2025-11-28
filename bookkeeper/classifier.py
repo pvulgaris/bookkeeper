@@ -105,14 +105,48 @@ class TransactionClassifier:
             # Format categories for better readability
             categories_formatted = "\n".join([f"  - {cat}" for cat in available_categories])
 
+            # Get day of week for additional context
+            day_of_week = transaction.date.strftime("%A")
+
+            # Build rich context
+            context_parts = [
+                f"Date: {transaction.date} ({day_of_week})",
+                f"Payee: {transaction.payee}",
+                f"Amount: ${transaction.amount:.2f}",
+            ]
+
+            # Add account information
+            if transaction.account_name:
+                account_desc = transaction.account_name
+                if transaction.account_type:
+                    # Make account type more readable
+                    readable_type = transaction.account_type.replace('CREDITCARD', 'Credit Card').replace('CHECKING', 'Checking')
+                    account_desc = f"{account_desc} ({readable_type})"
+                context_parts.append(f"Account: {account_desc}")
+
+            # Add FI note (card last 4 digits)
+            if transaction.fi_note:
+                context_parts.append(f"Card/Account: {transaction.fi_note}")
+
+            # Add memo if available
+            if transaction.memo:
+                context_parts.append(f"Memo: {transaction.memo}")
+
+            # Add reference if available
+            if transaction.reference:
+                context_parts.append(f"Reference: {transaction.reference}")
+
+            # Add check number if available
+            if transaction.check_number:
+                context_parts.append(f"Check #: {transaction.check_number}")
+
+            transaction_details = "\n- ".join(context_parts)
+
             # Build prompt
             prompt = f"""You are a financial transaction categorization expert. Analyze this transaction and suggest the most appropriate category.
 
 Transaction Details:
-- Date: {transaction.date}
-- Payee: {transaction.payee}
-- Amount: ${transaction.amount:.2f}
-- Memo: {transaction.memo or 'N/A'}
+- {transaction_details}
 
 Available Categories:
 {categories_formatted}
@@ -120,8 +154,9 @@ Available Categories:
 Instructions:
 1. Choose the single most appropriate category from the list above
 2. Provide a confidence score between 0.0 and 1.0
-3. Consider the payee name, amount, and memo when categorizing
-4. Respond ONLY with the category name and confidence, nothing else
+3. Consider ALL transaction details including payee, account type, day of week, amount, and any memo/reference
+4. The payee field may contain location info, card digits, or other metadata - use it all
+5. Respond ONLY with the category name and confidence, nothing else
 
 Format your response exactly as: CATEGORY_NAME|CONFIDENCE
 

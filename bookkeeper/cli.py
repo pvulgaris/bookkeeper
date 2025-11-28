@@ -154,17 +154,27 @@ def main(
 
     # Display suggestions in a table
     table = Table(title=f"Suggested Categorizations ({len(suggestions)} transactions)")
-    table.add_column("Date", style="cyan")
+    table.add_column("Date", style="cyan", no_wrap=True)
+    table.add_column("Account", style="blue")
     table.add_column("Payee", style="yellow")
     table.add_column("Amount", style="magenta", justify="right")
+    table.add_column("Card", style="dim")
     table.add_column("Suggested Category", style="green")
-    table.add_column("Confidence", justify="right")
+    table.add_column("Conf", justify="right")
 
     for txn, category, confidence in suggestions.values():
+        # Format account name (truncate if too long)
+        account = (txn.account_name[:15] + "...") if txn.account_name and len(txn.account_name) > 18 else (txn.account_name or "")
+
+        # Format card/account last 4
+        card = txn.fi_note[-4:] if txn.fi_note and len(txn.fi_note) >= 4 else (txn.fi_note or "")
+
         table.add_row(
             str(txn.date),
-            txn.payee[:40],  # Truncate long payees
+            account,
+            txn.payee[:30],  # Truncate long payees
             f"${txn.amount:.2f}",
+            card,
             category,
             f"{confidence:.0%}"
         )

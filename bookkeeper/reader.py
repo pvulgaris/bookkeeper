@@ -38,6 +38,9 @@ class Transaction:
     memo: Optional[str]
     account_id: int
     # Additional fields useful for classification
+    account_name: Optional[str]
+    account_type: Optional[str]
+    fi_note: Optional[str]  # Last 4 digits of card/account from bank
     reference: Optional[str]
     check_number: Optional[str]
     # Store all raw data for ML/LLM classification
@@ -106,6 +109,7 @@ class QuickenReader:
                     t.ZPOSTEDDATE as posted_date,
                     t.ZAMOUNT as amount,
                     t.ZNOTE as note,
+                    t.ZFINOTE as fi_note,
                     t.ZREFERENCE as reference,
                     t.ZCHECKNUMBER as check_number,
                     t.ZACCOUNT as account_id,
@@ -170,6 +174,9 @@ class QuickenReader:
                     category=row["category_name"],
                     memo=row["note"],
                     account_id=row["account_id"],
+                    account_name=row["account_name"],
+                    account_type=row["account_type"],
+                    fi_note=row["fi_note"],
                     reference=row["reference"],
                     check_number=row["check_number"],
                     raw_data=dict(row),
