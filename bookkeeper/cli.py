@@ -141,8 +141,8 @@ def main(
 
         for txn in uncategorized:
             suggested_category, confidence = classifier.classify(txn, categories)
-            if confidence > 0.5:  # Only suggest if confidence is reasonable
-                suggestions[txn.id] = (txn, suggested_category, confidence)
+            # Show all suggestions regardless of confidence for now
+            suggestions[txn.id] = (txn, suggested_category, confidence)
             progress.advance(task)
 
     console.print()
