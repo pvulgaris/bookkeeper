@@ -1,7 +1,9 @@
 """Transaction classification using ML and LLM."""
 
+import time
 from typing import Optional
 
+import requests
 from anthropic import Anthropic
 
 from .reader import Transaction
@@ -161,6 +163,61 @@ class TransactionClassifier:
 
         return None
 
+    def _web_search(self, query: str, max_retries: int = 3) -> str:
+        """
+        Perform a web search using DuckDuckGo's instant answer API with retry logic.
+
+        Args:
+            query: Search query
+            max_retries: Maximum number of retry attempts
+
+        Returns:
+            Search results as formatted string, or error message if all retries fail
+        """
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                # Use DuckDuckGo instant answer API (free, no key needed)
+                url = "https://api.duckduckgo.com/"
+                params = {
+                    "q": query,
+                    "format": "json",
+                    "no_html": 1,
+                    "skip_disambig": 1
+                }
+
+                response = requests.get(url, params=params, timeout=5)
+                response.raise_for_status()  # Raise exception for bad status codes
+                data = response.json()
+
+                results = []
+
+                # Add abstract if available
+                if data.get("Abstract"):
+                    results.append(f"Summary: {data['Abstract']}")
+
+                # Add related topics
+                if data.get("RelatedTopics"):
+                    for i, topic in enumerate(data["RelatedTopics"][:3]):
+                        if isinstance(topic, dict) and topic.get("Text"):
+                            results.append(f"{i+1}. {topic['Text']}")
+
+                if results:
+                    return "\n".join(results)
+                else:
+                    return f"No specific results found for '{query}'"
+
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    # Wait before retrying (exponential backoff)
+                    time.sleep(0.5 * (2 ** attempt))
+                    continue
+
+        # All retries failed - return error message instead of raising exception
+        return f"Web search failed after {max_retries} attempts: {str(last_error)}"
+
     def _classify_with_ml(
         self, transaction: Transaction, available_categories: list[str]
     ) -> tuple[str, float]:
@@ -183,7 +240,7 @@ class TransactionClassifier:
         self, transaction: Transaction, available_categories: list[str]
     ) -> tuple[str, float]:
         """
-        Classify using Claude LLM.
+        Classify using Claude LLM with web search tool.
 
         Args:
             transaction: Transaction to classify
@@ -237,7 +294,7 @@ class TransactionClassifier:
             transaction_details = "\n- ".join(context_parts)
 
             # Build prompt
-            prompt = f"""You are a financial transaction categorization expert. Analyze this transaction and suggest the most appropriate category.
+            prompt = f"""You are a financial transaction categorization expert with access to web search. Analyze this transaction and suggest the most appropriate category.
 
 Transaction Details:
 - {transaction_details}
@@ -246,30 +303,113 @@ Available Categories:
 {categories_formatted}
 
 Instructions:
-1. Choose the single most appropriate category from the list above
-2. Provide a confidence score between 0.0 and 1.0
-3. Consider ALL transaction details including payee, account type, day of week, amount, and any memo/reference
-4. The payee field may contain location info, card digits, or other metadata - use it all
-5. Respond ONLY with the category name and confidence, nothing else
+1. If the payee name is unclear or contains merchant codes, use the web_search tool to identify the actual merchant
+2. Choose the single most appropriate category from the list above
+3. Provide a confidence score between 0.0 and 1.0
+4. Consider ALL transaction details including payee, account type, day of week, amount, and any memo/reference
+5. Respond ONLY with the category name and confidence - no explanations or extra text
 
 Format your response exactly as: CATEGORY_NAME|CONFIDENCE
 
-Example: Groceries|0.95"""
+Examples:
+- Groceries|0.95
+- Electronics & Software|0.88
+- Gas & Fuel|0.92"""
 
-            # Call Claude API (using latest Haiku 4.5 model)
+            # Define web search tool
+            tools = [{
+                "name": "web_search",
+                "description": "Search the web to identify merchants or get information about businesses. Use this when the payee name is unclear or contains merchant codes.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query to identify the merchant or business"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }]
+
+            # Initial API call with tool support
+            messages = [{"role": "user", "content": prompt}]
             response = self.client.messages.create(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=100,
-                messages=[{"role": "user", "content": prompt}]
+                max_tokens=1000,
+                tools=tools,
+                messages=messages
             )
 
-            # Parse response
-            response_text = response.content[0].text.strip()
-            parts = response_text.split("|")
+            # Tool use loop - always send tool_result even if search fails
+            while response.stop_reason == "tool_use":
+                # Find ALL tool use blocks in response
+                tool_use_blocks = [
+                    block for block in response.content
+                    if block.type == "tool_use"
+                ]
 
-            if len(parts) == 2:
+                if not tool_use_blocks:
+                    break
+
+                # Add assistant message with all tool uses
+                messages.append({"role": "assistant", "content": response.content})
+
+                # Execute web search for each tool use and collect results
+                tool_results = []
+                for tool_use_block in tool_use_blocks:
+                    search_query = tool_use_block.input["query"]
+                    search_results = self._web_search(search_query)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_block.id,
+                        "content": search_results
+                    })
+
+                # Add all tool results in a single user message
+                messages.append({
+                    "role": "user",
+                    "content": tool_results
+                })
+
+                # Continue conversation
+                response = self.client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=1000,
+                    tools=tools,
+                    messages=messages
+                )
+
+            # Parse final response
+            response_text = ""
+            for block in response.content:
+                if hasattr(block, "text"):
+                    response_text = block.text.strip()
+                    break
+
+            # Extract the last line that looks like CATEGORY|CONFIDENCE
+            # (Claude sometimes adds explanations before the final answer)
+            lines = response_text.split("\n")
+            parts = None
+            for line in reversed(lines):
+                line = line.strip()
+                if "|" in line:
+                    test_parts = line.split("|")
+                    if len(test_parts) == 2:
+                        parts = test_parts
+                        break
+
+            if parts and len(parts) == 2:
                 category = parts[0].strip()
-                confidence = float(parts[1].strip())
+                # Robust confidence parsing: handle "0.92**" or "0.92\n\nExplanation..."
+                confidence_raw = parts[1].strip()
+                # Take first token, remove trailing asterisks
+                confidence_str = confidence_raw.split()[0].rstrip('*')
+
+                try:
+                    confidence = float(confidence_str)
+                except ValueError:
+                    return "Uncategorized", 0.0
 
                 # Validate category exists in available categories
                 if category in available_categories:
@@ -280,7 +420,7 @@ Example: Groceries|0.95"""
                         if cat.lower() == category.lower():
                             return cat, confidence
 
-                    # Category not found
+                    # Category not found in available categories
                     return "Uncategorized", 0.0
             else:
                 # Invalid format
