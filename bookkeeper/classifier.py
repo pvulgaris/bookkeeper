@@ -1,10 +1,8 @@
 """Transaction classification using ML and LLM."""
 
 import json
-import time
 from typing import Optional
 
-import requests
 from anthropic import Anthropic
 
 from .reader import Transaction
@@ -164,61 +162,6 @@ class TransactionClassifier:
 
         return None
 
-    def _web_search(self, query: str, max_retries: int = 3) -> str:
-        """
-        Perform a web search using DuckDuckGo's instant answer API with retry logic.
-
-        Args:
-            query: Search query
-            max_retries: Maximum number of retry attempts
-
-        Returns:
-            Search results as formatted string, or error message if all retries fail
-        """
-        last_error = None
-
-        for attempt in range(max_retries):
-            try:
-                # Use DuckDuckGo instant answer API (free, no key needed)
-                url = "https://api.duckduckgo.com/"
-                params = {
-                    "q": query,
-                    "format": "json",
-                    "no_html": 1,
-                    "skip_disambig": 1
-                }
-
-                response = requests.get(url, params=params, timeout=5)
-                response.raise_for_status()  # Raise exception for bad status codes
-                data = response.json()
-
-                results = []
-
-                # Add abstract if available
-                if data.get("Abstract"):
-                    results.append(f"Summary: {data['Abstract']}")
-
-                # Add related topics
-                if data.get("RelatedTopics"):
-                    for i, topic in enumerate(data["RelatedTopics"][:3]):
-                        if isinstance(topic, dict) and topic.get("Text"):
-                            results.append(f"{i+1}. {topic['Text']}")
-
-                if results:
-                    return "\n".join(results)
-                else:
-                    return f"No specific results found for '{query}'"
-
-            except Exception as e:
-                last_error = e
-                if attempt < max_retries - 1:
-                    # Wait before retrying (exponential backoff)
-                    time.sleep(0.5 * (2 ** attempt))
-                    continue
-
-        # All retries failed - return error message instead of raising exception
-        return f"Web search failed after {max_retries} attempts: {str(last_error)}"
-
     def _classify_with_ml(
         self, transaction: Transaction, available_categories: list[str]
     ) -> tuple[str, float]:
@@ -295,7 +238,7 @@ class TransactionClassifier:
             transaction_details = "\n- ".join(context_parts)
 
             # Build prompt
-            prompt = f"""You are a financial transaction categorization expert with access to web search. Analyze this transaction and suggest the most appropriate category.
+            prompt = f"""You are a financial transaction categorization expert. Analyze this transaction and suggest the most appropriate category.
 
 Transaction Details:
 - {transaction_details}
@@ -304,7 +247,7 @@ Available Categories:
 {categories_formatted}
 
 Instructions:
-1. If the payee name is unclear or contains merchant codes, use the web_search tool to identify the actual merchant
+1. Identify the merchant from the payee information using your knowledge
 2. Choose the single most appropriate category from the list above
 3. Provide a confidence score between 0.0 and 1.0
 4. Consider ALL transaction details including payee, account type, day of week, amount, and any memo/reference
@@ -320,23 +263,7 @@ Example responses:
 {{"category": "Electronics & Software", "confidence": 0.88}}
 {{"category": "Gas & Fuel", "confidence": 0.92}}"""
 
-            # Define web search tool
-            tools = [{
-                "name": "web_search",
-                "description": "Search the web to identify merchants or get information about businesses. Use this when the payee name is unclear or contains merchant codes.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search query to identify the merchant or business"
-                        }
-                    },
-                    "required": ["query"]
-                }
-            }]
-
-            # Initial API call with tool support and JSON prefill
+            # API call with JSON prefill for structured output
             messages = [
                 {"role": "user", "content": prompt},
                 {"role": "assistant", "content": "{"}  # Prefill to force JSON output
@@ -344,49 +271,8 @@ Example responses:
             response = self.client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=1000,
-                tools=tools,
                 messages=messages
             )
-
-            # Tool use loop - always send tool_result even if search fails
-            while response.stop_reason == "tool_use":
-                # Find ALL tool use blocks in response
-                tool_use_blocks = [
-                    block for block in response.content
-                    if block.type == "tool_use"
-                ]
-
-                if not tool_use_blocks:
-                    break
-
-                # Add assistant message with all tool uses
-                messages.append({"role": "assistant", "content": response.content})
-
-                # Execute web search for each tool use and collect results
-                tool_results = []
-                for tool_use_block in tool_use_blocks:
-                    search_query = tool_use_block.input["query"]
-                    search_results = self._web_search(search_query)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_block.id,
-                        "content": search_results
-                    })
-
-                # Add all tool results in a single user message
-                messages.append({
-                    "role": "user",
-                    "content": tool_results
-                })
-
-                # Continue conversation with JSON prefill
-                messages.append({"role": "assistant", "content": "{"})
-                response = self.client.messages.create(
-                    model="claude-haiku-4-5-20251001",
-                    max_tokens=1000,
-                    tools=tools,
-                    messages=messages
-                )
 
             # Parse final response as JSON
             response_text = ""
