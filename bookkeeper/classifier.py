@@ -1,5 +1,6 @@
 """Transaction classification using ML and LLM."""
 
+import json
 import time
 from typing import Optional
 
@@ -307,14 +308,17 @@ Instructions:
 2. Choose the single most appropriate category from the list above
 3. Provide a confidence score between 0.0 and 1.0
 4. Consider ALL transaction details including payee, account type, day of week, amount, and any memo/reference
-5. Respond ONLY with the category name and confidence - no explanations or extra text
 
-Format your response exactly as: CATEGORY_NAME|CONFIDENCE
+Respond with valid JSON only, in this exact format:
+{{
+  "category": "CATEGORY_NAME",
+  "confidence": 0.95
+}}
 
-Examples:
-- Groceries|0.95
-- Electronics & Software|0.88
-- Gas & Fuel|0.92"""
+Example responses:
+{{"category": "Groceries", "confidence": 0.95}}
+{{"category": "Electronics & Software", "confidence": 0.88}}
+{{"category": "Gas & Fuel", "confidence": 0.92}}"""
 
             # Define web search tool
             tools = [{
@@ -332,8 +336,11 @@ Examples:
                 }
             }]
 
-            # Initial API call with tool support
-            messages = [{"role": "user", "content": prompt}]
+            # Initial API call with tool support and JSON prefill
+            messages = [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "{"}  # Prefill to force JSON output
+            ]
             response = self.client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=1000,
@@ -372,7 +379,8 @@ Examples:
                     "content": tool_results
                 })
 
-                # Continue conversation
+                # Continue conversation with JSON prefill
+                messages.append({"role": "assistant", "content": "{"})
                 response = self.client.messages.create(
                     model="claude-haiku-4-5-20251001",
                     max_tokens=1000,
@@ -380,36 +388,20 @@ Examples:
                     messages=messages
                 )
 
-            # Parse final response
+            # Parse final response as JSON
             response_text = ""
             for block in response.content:
                 if hasattr(block, "text"):
                     response_text = block.text.strip()
                     break
 
-            # Extract the last line that looks like CATEGORY|CONFIDENCE
-            # (Claude sometimes adds explanations before the final answer)
-            lines = response_text.split("\n")
-            parts = None
-            for line in reversed(lines):
-                line = line.strip()
-                if "|" in line:
-                    test_parts = line.split("|")
-                    if len(test_parts) == 2:
-                        parts = test_parts
-                        break
+            # Add opening brace from prefill and parse JSON
+            try:
+                json_str = "{" + response_text
+                data = json.loads(json_str)
 
-            if parts and len(parts) == 2:
-                category = parts[0].strip()
-                # Robust confidence parsing: handle "0.92**" or "0.92\n\nExplanation..."
-                confidence_raw = parts[1].strip()
-                # Take first token, remove trailing asterisks
-                confidence_str = confidence_raw.split()[0].rstrip('*')
-
-                try:
-                    confidence = float(confidence_str)
-                except ValueError:
-                    return "Uncategorized", 0.0
+                category = data.get("category", "").strip()
+                confidence = float(data.get("confidence", 0.0))
 
                 # Validate category exists in available categories
                 if category in available_categories:
@@ -422,8 +414,9 @@ Examples:
 
                     # Category not found in available categories
                     return "Uncategorized", 0.0
-            else:
-                # Invalid format
+
+            except (json.JSONDecodeError, ValueError, KeyError) as e:
+                # JSON parsing failed
                 return "Uncategorized", 0.0
 
         except Exception as e:
